@@ -150,11 +150,7 @@ def demo_level2():
 
         console.print(f"\n[dim]指令长度: {len(content.instructions)} 字符[/dim]")
         console.print(f"[dim]估算 tokens: ~{token_estimate}[/dim]")
-
-        if content.scripts:
-            console.print(f"[dim]可用脚本: {len(content.scripts)} 个[/dim]")
-            for script in content.scripts[:3]:  # 最多显示 3 个
-                console.print(f"  - {script.name}")
+        console.print(f"[dim]脚本发现: 由 LLM 从指令中自主发现[/dim]")
 
 
 def demo_level3():

@@ -1,5 +1,5 @@
 """
-交互式对话示例 - 与 Skills Agent 进行多轮对话
+交互式对话示例 - 与 LangChain Skills Agent 进行多轮对话
 
 这个示例展示了如何进行交互式对话，
 让用户可以连续发送多个请求给 Agent。
@@ -8,20 +8,14 @@
     uv run python examples/interactive_chat.py
 
 确保已配置认证（.env 文件或环境变量）:
-    # 方式1: Anthropic API
     export ANTHROPIC_API_KEY=your-api-key
-
-    # 方式2: 第三方代理（推荐）
-    export ANTHROPIC_AUTH_TOKEN=your-token
-    export ANTHROPIC_BASE_URL=https://your-proxy.com
 """
 
-import asyncio
-import os
 import sys
+from pathlib import Path
 
 # 添加 src 目录到 Python 路径
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from dotenv import load_dotenv
 
@@ -31,8 +25,9 @@ load_dotenv()
 from rich.console import Console
 from rich.panel import Panel
 from rich.prompt import Prompt
+from rich.markdown import Markdown
 
-from skills_agent.agent import SkillsAgent
+from langchain_skills import LangChainSkillsAgent
 
 console = Console()
 
@@ -40,31 +35,29 @@ console = Console()
 def print_banner():
     """打印欢迎横幅"""
     console.print(Panel(
-        "[bold cyan]Skills Agent 交互式对话[/bold cyan]\n\n"
+        "[bold cyan]LangChain Skills Agent 交互式对话[/bold cyan]\n\n"
         "你可以与 Agent 进行多轮对话，Agent 能够：\n"
-        "• 自动发现和使用 ~/.claude/skills/ 中的 Skills\n"
-        "• 读取、编辑文件\n"
-        "• 执行命令\n\n"
+        "- 自动发现和使用 ~/.claude/skills/ 中的 Skills\n"
+        "- 读取、编辑文件\n"
+        "- 执行命令\n\n"
         "[dim]输入 'exit' 退出，'skills' 查看可用 Skills[/dim]",
         title="欢迎"
     ))
     console.print()
 
 
-async def chat():
+def chat():
     """交互式对话"""
-
-    # 检查 API Key 或 Auth Token
-    has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
-    has_auth_token = bool(os.environ.get("ANTHROPIC_AUTH_TOKEN"))
-    if not (has_api_key or has_auth_token):
-        console.print("[red]请设置 ANTHROPIC_API_KEY 或 ANTHROPIC_AUTH_TOKEN 环境变量[/red]")
-        return
 
     print_banner()
 
     # 创建 Agent
-    agent = SkillsAgent()
+    agent = LangChainSkillsAgent()
+
+    # 显示发现的 Skills
+    skills = agent.get_discovered_skills()
+    console.print(f"[dim]已加载 {len(skills)} 个 Skills[/dim]")
+    console.print()
 
     while True:
         try:
@@ -77,14 +70,25 @@ async def chat():
                 break
 
             if user_input.lower() == "skills":
-                user_input = "请列出所有可用的 Skills 及其简要说明"
+                console.print("\n[bold]可用 Skills:[/bold]")
+                for skill in skills:
+                    console.print(f"  - [green]{skill['name']}[/green]: {skill['description'][:60]}...")
+                console.print()
+                continue
 
             if not user_input.strip():
                 continue
 
             # 运行 Agent
             console.print()
-            await agent.run_with_output(user_input)
+            try:
+                result = agent.invoke(user_input)
+                response = agent.get_last_response(result)
+                console.print("[bold blue]Agent:[/bold blue]")
+                console.print(Markdown(response))
+            except Exception as e:
+                console.print(f"[red]错误: {e}[/red]")
+
             console.print()
 
         except KeyboardInterrupt:
@@ -92,13 +96,11 @@ async def chat():
             break
         except Exception as e:
             console.print(f"[red]错误: {e}[/red]")
-            import traceback
-            traceback.print_exc()
 
 
 def main():
     """主入口"""
-    asyncio.run(chat())
+    chat()
 
 
 if __name__ == "__main__":

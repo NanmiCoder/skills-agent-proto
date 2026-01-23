@@ -1,12 +1,12 @@
-# Skills Agent
+# LangChain Skills Agent
 
-使用 Claude Agent SDK 构建的能发现和使用 Skills 的 Coding Agent。
+使用 LangChain 构建的能发现和使用 Skills 的 Coding Agent，演示 Anthropic Skills 三层加载机制的底层原理。
 
 ## 核心概念
 
 ### 什么是 Skills？
 
-Skills 是 Claude Code 的模块化能力扩展机制。每个 Skill 打包了指令、元数据和可选资源（脚本、模板），Claude 会在相关时自动使用它们。
+Skills 是 Claude Code 的模块化能力扩展机制。每个 Skill 打包了指令、元数据和可选资源（脚本、模板），Agent 会在相关时自动使用它们。
 
 ### Skills 三层加载机制
 
@@ -16,20 +16,14 @@ Skills 是 Claude Code 的模块化能力扩展机制。每个 Skill 打包了�
 | **Level 2** | 触发时 | <5000 | SKILL.md 主体指令 |
 | **Level 3** | 按需 | 仅输出 | 脚本执行结果（代码不进上下文） |
 
-### 核心配置
+### 核心设计理念
 
-让 Agent 能使用 Skills 的关键配置：
-
-```python
-ClaudeAgentOptions(
-    # 关键配置 1：启用 Skills 发现
-    setting_sources=["user", "project"],
-    # "user" = ~/.claude/skills/
-    # "project" = .claude/skills/
-
-    # 关键配置 2：允许使用 Skill 工具
-    allowed_tools=["Skill", "Read", "Bash", ...],
-)
+```
+让大模型成为真正的"智能体"：
+- 自己阅读 SKILL.md 指令
+- 自己发现可用的脚本
+- 自己决定执行什么命令
+- 代码层面不需要特殊处理脚本发现/执行逻辑
 ```
 
 ## 快速开始
@@ -62,9 +56,13 @@ uv run python examples/extract_article.py "https://mp.weixin.qq.com/s/xxx"
 # 交互式对话
 uv run python examples/interactive_chat.py
 
+# 三层加载机制演示
+uv run python examples/langchain_demo.py
+
 # 或使用 CLI
-uv run skills-agent "列出所有可用的 Skills"
-uv run skills-agent --interactive
+uv run langchain-skills --list-skills
+uv run langchain-skills --show-prompt
+uv run langchain-skills --interactive
 ```
 
 ## 项目结构
@@ -72,14 +70,17 @@ uv run skills-agent --interactive
 ```
 skills-agent-proto/
 ├── src/
-│   └── skills_agent/
-│       ├── __init__.py
-│       ├── agent.py          # 核心 Agent 实现
-│       └── cli.py            # CLI 入口
+│   └── langchain_skills/
+│       ├── __init__.py       # 模块导出
+│       ├── agent.py          # LangChain Agent 实现
+│       ├── cli.py            # CLI 入口
+│       ├── skill_loader.py   # Skills 发现和加载
+│       └── tools.py          # LangChain Tools 定义
 ├── examples/
 │   ├── basic_usage.py        # 基本使用示例
 │   ├── extract_article.py    # 文章提取示例
-│   └── interactive_chat.py   # 交互式对话示例
+│   ├── interactive_chat.py   # 交互式对话示例
+│   └── langchain_demo.py     # 三层加载机制演示
 ├── pyproject.toml
 └── README.md
 ```
@@ -89,30 +90,35 @@ skills-agent-proto/
 ### 作为库使用
 
 ```python
-import asyncio
-from skills_agent import SkillsAgent
-from claude_agent_sdk import AssistantMessage, TextBlock
+from langchain_skills import LangChainSkillsAgent
 
-async def main():
-    agent = SkillsAgent()
+# 创建 Agent
+agent = LangChainSkillsAgent()
 
-    async for message in agent.run("提取这篇公众号文章"):
-        if isinstance(message, AssistantMessage):
-            for block in message.content:
-                if isinstance(block, TextBlock):
-                    print(block.text)
+# 查看发现的 Skills
+for skill in agent.get_discovered_skills():
+    print(f"- {skill['name']}: {skill['description']}")
 
-asyncio.run(main())
+# 查看 system prompt (Level 1)
+print(agent.get_system_prompt())
+
+# 运行 Agent
+result = agent.invoke("提取这篇公众号文章")
+response = agent.get_last_response(result)
+print(response)
 ```
 
 ### 作为 CLI 使用
 
 ```bash
-# 单次执行
-skills-agent "你的请求"
+# 列出发现的 Skills
+langchain-skills --list-skills
+
+# 显示 system prompt
+langchain-skills --show-prompt
 
 # 交互式模式
-skills-agent --interactive
+langchain-skills --interactive
 ```
 
 ## Skills 位置
@@ -137,11 +143,37 @@ description: 这个 Skill 做什么，什么时候使用它
 ...
 ```
 
+## LangChain 1.0 API 要点
+
+### create_agent
+
+```python
+from langchain.agents import create_agent
+from langchain_anthropic import ChatAnthropic
+
+agent = create_agent(
+    model=ChatAnthropic(model="claude-sonnet-4-5-20250929"),
+    tools=[load_skill, bash, read_file],
+    system_prompt=skills_prompt,
+)
+```
+
+### @tool with ToolRuntime
+
+```python
+from langchain.tools import tool, ToolRuntime
+
+@tool
+def my_tool(arg: str, runtime: ToolRuntime[MyContext]) -> str:
+    '''Tool description.'''
+    # runtime.context 访问上下文
+    return result
+```
+
 ## 参考文档
 
 - [skill_introduce.md](./skill_introduce.md) - Skills 详细介绍
-- [agent_sdk_overview.md](./agent_sdk_overview.md) - Agent SDK 概述
-- [agent_sdk_python.md](./agent_sdk_python.md) - Python SDK API 参考
+- [langchain_agent_skill.md](./langchain_agent_skill.md) - LangChain 实现说明
 
 ## License
 
