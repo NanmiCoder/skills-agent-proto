@@ -21,17 +21,15 @@ cd skills-agent-proto
 uv sync
 ```
 
-### 2. 配置 API Key
+### 2. 配置 Claude API Key
 
 创建 `.env` 文件：
 
-```bash
-# 方式一：直接使用 Anthropic API
-ANTHROPIC_API_KEY=sk-xxx
+> 使用第三方代理中转, 我推荐使用 [接口AI](https://jiekou.ai/referral?invited_code=3CF8T0)，注册绑定github得3刀试用券
 
-# 方式二：使用第三方代理
-ANTHROPIC_API_KEY=your-key
-ANTHROPIC_BASE_URL=https://your-proxy.com/anthropic
+```bash
+ANTHROPIC_AUTH_TOKEN=sk-xxx
+ANTHROPIC_BASE_URL=https://api.jiekou.ai/anthropic
 ```
 
 ### 3. 交互式验证
