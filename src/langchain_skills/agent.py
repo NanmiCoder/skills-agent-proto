@@ -27,10 +27,11 @@ from langgraph.checkpoint.memory import InMemorySaver
 
 from .skill_loader import SkillLoader
 from .tools import ALL_TOOLS, SkillAgentContext
+from .stream import StreamEventEmitter, ToolCallTracker, is_success, DisplayLimits
 
 
-# 加载环境变量
-load_dotenv()
+# 加载环境变量（override=True 确保 .env 文件覆盖系统环境变量）
+load_dotenv(override=True)
 
 
 # 默认配置
@@ -287,14 +288,14 @@ When a user request matches a skill's description, use the load_skill tool to ge
             - {"type": "thinking", "content": "..."} - 思考内容片段
             - {"type": "text", "content": "..."} - 响应文本片段
             - {"type": "tool_call", "name": "...", "args": {...}} - 工具调用
-            - {"type": "tool_result", "name": "...", "content": "..."} - 工具结果
+            - {"type": "tool_result", "name": "...", "content": "...", "success": bool} - 工具结果
             - {"type": "done", "response": "..."} - 完成标记，包含完整响应
         """
         config = {"configurable": {"thread_id": thread_id}}
+        emitter = StreamEventEmitter()
+        tracker = ToolCallTracker()
 
         full_response = ""
-        current_thinking = ""
-        seen_tool_calls = set()  # 跟踪已发送的 tool_call
 
         # 使用 messages 模式获取 token 级流式
         for event in self.agent.stream(
@@ -311,76 +312,104 @@ When a user request matches a skill's description, use the load_skill tool to ge
 
             # 处理 AIMessageChunk
             if isinstance(chunk, AIMessageChunk):
-                content = chunk.content
-
-                # content 可能是字符串或列表
-                if isinstance(content, str) and content:
-                    full_response += content
-                    yield {"type": "text", "content": content}
-
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict):
-                            block_type = block.get("type")
-
-                            # thinking 块
-                            if block_type == "thinking":
-                                thinking_text = block.get("thinking", "")
-                                if thinking_text:
-                                    current_thinking += thinking_text
-                                    yield {"type": "thinking", "content": thinking_text}
-
-                            # text 块
-                            elif block_type == "text":
-                                text = block.get("text", "")
-                                if text:
-                                    full_response += text
-                                    yield {"type": "text", "content": text}
-
-                            # tool_use 块
-                            elif block_type == "tool_use":
-                                tool_id = block.get("id", "")
-                                tool_name = block.get("name", "")
-                                tool_args = block.get("input", {})
-                                # 避免重复发送相同的 tool_call
-                                if tool_id and tool_id not in seen_tool_calls:
-                                    seen_tool_calls.add(tool_id)
-                                    yield {
-                                        "type": "tool_call",
-                                        "id": tool_id,
-                                        "name": tool_name,
-                                        "args": tool_args,
-                                    }
+                # 处理 content
+                for ev in self._process_chunk_content(chunk, emitter, tracker):
+                    if ev.type == "text":
+                        full_response += ev.data.get("content", "")
+                    yield ev.data
 
                 # 处理 tool_calls (有些情况下在 chunk.tool_calls 中)
                 if hasattr(chunk, "tool_calls") and chunk.tool_calls:
-                    for tool_call in chunk.tool_calls:
-                        tool_id = tool_call.get("id", "")
-                        if tool_id and tool_id not in seen_tool_calls:
-                            seen_tool_calls.add(tool_id)
-                            yield {
-                                "type": "tool_call",
-                                "id": tool_id,
-                                "name": tool_call.get("name", ""),
-                                "args": tool_call.get("args", {}),
-                            }
+                    for ev in self._process_tool_calls(chunk.tool_calls, emitter, tracker):
+                        yield ev.data
 
             # 处理 ToolMessage (工具执行结果)
             elif hasattr(chunk, "type") and chunk.type == "tool":
-                tool_name = getattr(chunk, "name", "unknown")
-                tool_content = getattr(chunk, "content", "")
-                # 截断过长的结果用于显示
-                display_content = str(tool_content)[:500]
-                if len(str(tool_content)) > 500:
-                    display_content += "..."
-                yield {
-                    "type": "tool_result",
-                    "name": tool_name,
-                    "content": display_content,
-                }
+                for ev in self._process_tool_result(chunk, emitter, tracker):
+                    yield ev.data
 
         # 发送完成事件
-        yield {"type": "done", "response": full_response}
+        yield emitter.done(full_response).data
+
+    def _process_chunk_content(self, chunk, emitter: StreamEventEmitter, tracker: ToolCallTracker):
+        """处理 chunk 的 content"""
+        content = chunk.content
+
+        if isinstance(content, str) and content:
+            yield emitter.text(content)
+
+        elif isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+
+                block_type = block.get("type")
+
+                if block_type == "thinking":
+                    thinking_text = block.get("thinking", "")
+                    if thinking_text:
+                        yield emitter.thinking(thinking_text)
+
+                elif block_type == "text":
+                    text = block.get("text", "")
+                    if text:
+                        yield emitter.text(text)
+
+                elif block_type == "tool_use":
+                    for ev in self._handle_tool_use_block(block, emitter, tracker):
+                        yield ev
+
+                elif block_type == "input_json_delta":
+                    # 累积 JSON 片段（args 分批到达）
+                    partial_json = block.get("partial_json", "")
+                    if partial_json:
+                        tracker.append_json_delta(partial_json, block.get("index", 0))
+
+    def _handle_tool_use_block(self, block: dict, emitter: StreamEventEmitter, tracker: ToolCallTracker):
+        """处理 tool_use 块（只更新 tracker，不发送事件）
+
+        tool_call 事件延迟到 tool_result 时再发送，确保 args 已完整。
+        """
+        # 让函数成为空生成器
+        if False:
+            yield
+        tool_id = block.get("id", "")
+        if tool_id:
+            tracker.update(tool_id, name=block.get("name"), args=block.get("input"))
+
+    def _process_tool_calls(self, tool_calls: list, emitter: StreamEventEmitter, tracker: ToolCallTracker):
+        """处理 chunk.tool_calls（只更新 tracker，不发送事件）
+
+        tool_call 事件延迟到 tool_result 时再发送，确保 args 已完整。
+        """
+        # 让函数成为空生成器
+        if False:
+            yield
+        for tc in tool_calls:
+            tool_id = tc.get("id", "")
+            if tool_id:
+                tracker.update(tool_id, name=tc.get("name"), args=tc.get("args"))
+
+    def _process_tool_result(self, chunk, emitter: StreamEventEmitter, tracker: ToolCallTracker):
+        """处理工具结果"""
+        # 最终化：解析累积的 JSON 片段为 args
+        tracker.finalize_all()
+
+        # 发送所有未发送的 tool_call
+        for info in tracker.emit_all_pending():
+            yield emitter.tool_call(info.name, info.args, info.id)
+
+        # 发送结果
+        name = getattr(chunk, "name", "unknown")
+        raw_content = str(getattr(chunk, "content", ""))
+        content = raw_content[:DisplayLimits.TOOL_RESULT_MAX]
+        if len(raw_content) > DisplayLimits.TOOL_RESULT_MAX:
+            content += "\n... (truncated)"
+
+        # 基于内容判断是否成功（统一使用 is_success）
+        success = is_success(content)
+
+        yield emitter.tool_result(name, content, success)
 
     def get_last_response(self, result: dict) -> str:
         """

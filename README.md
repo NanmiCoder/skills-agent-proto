@@ -2,6 +2,8 @@
 
 使用 LangChain 构建的能发现和使用 Skills 的 Coding Agent，演示 Anthropic Skills 三层加载机制的底层原理。
 
+> **B站视频演示**: 配合视频《Skills 原理深度解析 + Agent 实战》使用，一键三连换代码！
+
 ## 核心概念
 
 ### 什么是 Skills？
@@ -47,40 +49,69 @@ export ANTHROPIC_API_KEY=your-api-key
 ### 3. 运行示例
 
 ```bash
-# 基本使用
-uv run python examples/basic_usage.py
-
-# 文章提取（需要 news-extractor skill）
-uv run python examples/extract_article.py "https://mp.weixin.qq.com/s/xxx"
-
-# 交互式对话
-uv run python examples/interactive_chat.py
-
-# 三层加载机制演示
-uv run python examples/langchain_demo.py
-
 # 或使用 CLI
 uv run langchain-skills --list-skills
 uv run langchain-skills --show-prompt
 uv run langchain-skills --interactive
 ```
 
+## 视频演示命令
+
+以下命令用于 B 站视频演示，展示三层加载机制：
+
+```bash
+# 1. 列出 Skills（展示 Level 1 元数据发现）
+uv run langchain-skills --list-skills
+
+# 2. 显示 System Prompt（展示元数据注入）
+uv run langchain-skills --show-prompt
+
+# 3. 实际运行（展示 Level 2 + 3 加载过程）
+uv run langchain-skills "提取这篇公众号文章: https://mp.weixin.qq.com/s/xxx"
+```
+
+### 示例 Skill: news-extractor
+
+项目自带的演示 Skill，位于 `.claude/skills/news-extractor/`:
+
+```
+.claude/skills/news-extractor/
+├── SKILL.md              # 元数据 + 指令
+├── pyproject.toml        # 依赖配置
+└── scripts/
+    └── extract_news.py   # 提取脚本
+```
+
+支持的站点：
+- 微信公众号 (`mp.weixin.qq.com`)
+- 今日头条 (`toutiao.com`)
+- 网易新闻 (`163.com`)
+- 搜狐新闻 (`sohu.com`)
+- 腾讯新闻 (`qq.com`)
+
 ## 项目结构
 
 ```
 skills-agent-proto/
+├── .claude/
+│   └── skills/
+│       └── news-extractor/   # 示例 Skill
+│           ├── SKILL.md
+│           ├── pyproject.toml
+│           └── scripts/
+│               └── extract_news.py
 ├── src/
 │   └── langchain_skills/
 │       ├── __init__.py       # 模块导出
-│       ├── agent.py          # LangChain Agent 实现
-│       ├── cli.py            # CLI 入口
-│       ├── skill_loader.py   # Skills 发现和加载
-│       └── tools.py          # LangChain Tools 定义
-├── examples/
-│   ├── basic_usage.py        # 基本使用示例
-│   ├── extract_article.py    # 文章提取示例
-│   ├── interactive_chat.py   # 交互式对话示例
-│   └── langchain_demo.py     # 三层加载机制演示
+│       ├── agent.py          # LangChain Agent 实现（Level 1 注入）
+│       ├── cli.py            # CLI 入口（流式输出 + Thinking）
+│       ├── skill_loader.py   # Skills 发现和加载（三层加载核心）
+│       └── tools.py          # LangChain Tools（load_skill + bash）
+├── examples/                  # 示例代码
+│   ├── basic_usage.py
+│   ├── extract_article.py
+│   ├── interactive_chat.py
+│   └── langchain_demo.py
 ├── pyproject.toml
 └── README.md
 ```

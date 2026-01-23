@@ -18,6 +18,7 @@ from dataclasses import dataclass, field
 from langchain.tools import tool, ToolRuntime
 
 from .skill_loader import SkillLoader
+from .stream import resolve_path
 
 
 @dataclass
@@ -60,12 +61,30 @@ def load_skill(skill_name: str, runtime: ToolRuntime[SkillAgentContext]) -> str:
         else:
             return f"Skill '{skill_name}' not found. No skills are currently available."
 
-    # 只返回 instructions，让大模型从指令中自己发现脚本和文档
+    # 获取 skill 路径信息
+    skill_path = skill_content.metadata.skill_path
+    scripts_dir = skill_path / "scripts"
+
+    # 构建路径信息
+    path_info = f"""
+## Skill Path Info
+
+- **Skill Directory**: `{skill_path}`
+- **Scripts Directory**: `{scripts_dir}`
+
+**Important**: When running scripts, use absolute paths like:
+```bash
+uv run {scripts_dir}/script_name.py [args]
+```
+"""
+
+    # 返回 instructions 和路径信息
     return f"""# Skill: {skill_name}
 
 ## Instructions
 
 {skill_content.instructions}
+{path_info}
 """
 
 
@@ -100,27 +119,34 @@ def bash(command: str, runtime: ToolRuntime[SkillAgentContext]) -> str:
             timeout=300,  # 5 分钟超时
         )
 
-        output_parts = []
+        parts = []
+
+        # 状态标记（与 ToolResultFormatter 配合）
+        if result.returncode == 0:
+            parts.append("[OK]")
+        else:
+            parts.append(f"[FAILED] Exit code: {result.returncode}")
+
+        parts.append("")  # 空行分隔
 
         if result.stdout:
-            output_parts.append(result.stdout)
+            parts.append(result.stdout.rstrip())
 
         if result.stderr:
-            if output_parts:
-                output_parts.append("")
-            output_parts.append(f"[stderr]\n{result.stderr}")
+            if result.stdout:
+                parts.append("")
+            parts.append("--- stderr ---")
+            parts.append(result.stderr.rstrip())
 
-        if not output_parts:
-            output_parts.append("[No output]")
+        if not result.stdout and not result.stderr:
+            parts.append("(no output)")
 
-        output_parts.append(f"\n[Exit code: {result.returncode}]")
-
-        return "\n".join(output_parts)
+        return "\n".join(parts)
 
     except subprocess.TimeoutExpired:
-        return "[Error] Command timed out after 300 seconds."
+        return "[FAILED] Command timed out after 300 seconds."
     except Exception as e:
-        return f"[Error] Failed to execute command: {str(e)}"
+        return f"[FAILED] {str(e)}"
 
 
 @tool
@@ -136,11 +162,7 @@ def read_file(file_path: str, runtime: ToolRuntime[SkillAgentContext]) -> str:
     Args:
         file_path: Path to the file (absolute or relative to working directory)
     """
-    path = Path(file_path)
-
-    # 处理相对路径
-    if not path.is_absolute():
-        path = runtime.context.working_directory / path
+    path = resolve_path(file_path, runtime.context.working_directory)
 
     if not path.exists():
         return f"[Error] File not found: {file_path}"
@@ -182,11 +204,7 @@ def write_file(file_path: str, content: str, runtime: ToolRuntime[SkillAgentCont
         file_path: Path to the file (absolute or relative to working directory)
         content: Content to write to the file
     """
-    path = Path(file_path)
-
-    # 处理相对路径
-    if not path.is_absolute():
-        path = runtime.context.working_directory / path
+    path = resolve_path(file_path, runtime.context.working_directory)
 
     try:
         # 确保父目录存在

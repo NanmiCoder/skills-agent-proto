@@ -26,3 +26,8 @@ packages = ["src/langchain_skills"]
 
 [tool.uv.sources]
 langchain-skills-agent = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]
