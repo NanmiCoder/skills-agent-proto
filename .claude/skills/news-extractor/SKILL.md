@@ -22,9 +22,16 @@ description: 新闻站点内容提取。支持微信公众号、今日头条、�
 本 skill 使用 uv 管理依赖。首次使用前需要安装：
 
 ```bash
+# 项目级使用（推荐）
+cd .claude/skills/news-extractor
+uv sync
+
+# 或用户级使用
 cd ~/.claude/skills/news-extractor
 uv sync
 ```
+
+> **说明**: 此 skill 可放置在项目级 (`.claude/skills/`) 或用户级 (`~/.claude/skills/`) 目录。项目级便于团队共享，用户级便于跨项目复用。
 
 **重要**: 所有脚本必须使用 `uv run` 执行，不要直接用 `python` 运行。`uv run` 会自动使用项目虚拟环境中的依赖。
 

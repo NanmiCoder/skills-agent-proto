@@ -10,9 +10,6 @@ __pycache__/
 scripts/data/
 scripts/output/
 
-# 依赖锁文件（粉丝可自行 uv sync 生成）
-uv.lock
-
 # 虚拟环境
 .venv/
 venv/
