@@ -296,37 +296,64 @@ When a user request matches a skill's description, use the load_skill tool to ge
         tracker = ToolCallTracker()
 
         full_response = ""
+        debug = os.getenv("SKILLS_DEBUG", "").lower() in ("1", "true", "yes")
 
         # 使用 messages 模式获取 token 级流式
-        for event in self.agent.stream(
-            {"messages": [{"role": "user", "content": message}]},
-            config=config,
-            context=self.context,
-            stream_mode="messages",
-        ):
-            # event 是一个 tuple: (message_chunk, metadata)
-            if not isinstance(event, tuple) or len(event) < 2:
-                continue
+        try:
+            for event in self.agent.stream(
+                {"messages": [{"role": "user", "content": message}]},
+                config=config,
+                context=self.context,
+                stream_mode="messages",
+            ):
+                # event 可能是 tuple(message, metadata) 或直接 message
+                if isinstance(event, tuple) and len(event) >= 2:
+                    chunk = event[0]
+                else:
+                    chunk = event
 
-            chunk, _ = event  # metadata 暂不使用
+                if debug:
+                    chunk_type = type(chunk).__name__
+                    print(f"[DEBUG] Event: {chunk_type}")
 
-            # 处理 AIMessageChunk
-            if isinstance(chunk, AIMessageChunk):
-                # 处理 content
-                for ev in self._process_chunk_content(chunk, emitter, tracker):
-                    if ev.type == "text":
-                        full_response += ev.data.get("content", "")
-                    yield ev.data
-
-                # 处理 tool_calls (有些情况下在 chunk.tool_calls 中)
-                if hasattr(chunk, "tool_calls") and chunk.tool_calls:
-                    for ev in self._process_tool_calls(chunk.tool_calls, emitter, tracker):
+                # 处理 AIMessageChunk / AIMessage
+                if isinstance(chunk, (AIMessageChunk, AIMessage)):
+                    # 处理 content
+                    for ev in self._process_chunk_content(chunk, emitter, tracker):
+                        if ev.type == "text":
+                            full_response += ev.data.get("content", "")
+                        if debug:
+                            print(f"[DEBUG] Yielding: {ev.type}")
                         yield ev.data
 
-            # 处理 ToolMessage (工具执行结果)
-            elif hasattr(chunk, "type") and chunk.type == "tool":
-                for ev in self._process_tool_result(chunk, emitter, tracker):
-                    yield ev.data
+                    # 处理 tool_calls (有些情况下在 chunk.tool_calls 中)
+                    if hasattr(chunk, "tool_calls") and chunk.tool_calls:
+                        for ev in self._process_tool_calls(chunk.tool_calls, emitter, tracker):
+                            if debug:
+                                print(f"[DEBUG] Yielding from tool_calls: {ev.type}")
+                            yield ev.data
+
+                # 处理 ToolMessage (工具执行结果)
+                elif hasattr(chunk, "type") and chunk.type == "tool":
+                    if debug:
+                        tool_name = getattr(chunk, "name", "unknown")
+                        print(f"[DEBUG] Processing tool result: {tool_name}")
+                    for ev in self._process_tool_result(chunk, emitter, tracker):
+                        if debug:
+                            print(f"[DEBUG] Yielding: {ev.type}")
+                        yield ev.data
+
+            if debug:
+                print("[DEBUG] Stream completed normally")
+
+        except Exception as e:
+            if debug:
+                import traceback
+                print(f"[DEBUG] Stream error: {e}")
+                traceback.print_exc()
+            # 发送错误事件让用户知道发生了什么
+            yield emitter.error(str(e)).data
+            raise
 
         # 发送完成事件
         yield emitter.done(full_response).data
@@ -335,69 +362,116 @@ When a user request matches a skill's description, use the load_skill tool to ge
         """处理 chunk 的 content"""
         content = chunk.content
 
-        if isinstance(content, str) and content:
-            yield emitter.text(content)
+        if isinstance(content, str):
+            if content:
+                yield emitter.text(content)
+                return
 
-        elif isinstance(content, list):
-            for block in content:
-                if not isinstance(block, dict):
+        blocks = None
+        if hasattr(chunk, "content_blocks"):
+            try:
+                blocks = chunk.content_blocks
+            except Exception:
+                blocks = None
+
+        if blocks is None:
+            if isinstance(content, dict):
+                blocks = [content]
+            elif isinstance(content, list):
+                blocks = content
+            else:
+                return
+
+        for raw_block in blocks:
+            block = raw_block
+            if not isinstance(block, dict):
+                if hasattr(block, "model_dump"):
+                    block = block.model_dump()
+                elif hasattr(block, "dict"):
+                    block = block.dict()
+                else:
                     continue
 
-                block_type = block.get("type")
+            block_type = block.get("type")
 
-                if block_type == "thinking":
-                    thinking_text = block.get("thinking", "")
-                    if thinking_text:
-                        yield emitter.thinking(thinking_text)
+            if block_type in ("thinking", "reasoning"):
+                thinking_text = block.get("thinking") or block.get("reasoning") or ""
+                if thinking_text:
+                    yield emitter.thinking(thinking_text)
 
-                elif block_type == "text":
-                    text = block.get("text", "")
-                    if text:
-                        yield emitter.text(text)
+            elif block_type == "text":
+                text = block.get("text") or block.get("content") or ""
+                if text:
+                    yield emitter.text(text)
 
-                elif block_type == "tool_use":
-                    for ev in self._handle_tool_use_block(block, emitter, tracker):
-                        yield ev
+            elif block_type in ("tool_use", "tool_call"):
+                tool_id = block.get("id", "")
+                name = block.get("name", "")
+                args = block.get("input") if block_type == "tool_use" else block.get("args")
+                args_payload = args if isinstance(args, dict) else {}
+                if tool_id:
+                    tracker.update(tool_id, name=name, args=args_payload)
+                    if tracker.is_ready(tool_id):
+                        tracker.mark_emitted(tool_id)
+                        yield emitter.tool_call(name, args_payload, tool_id)
 
-                elif block_type == "input_json_delta":
-                    # 累积 JSON 片段（args 分批到达）
-                    partial_json = block.get("partial_json", "")
-                    if partial_json:
-                        tracker.append_json_delta(partial_json, block.get("index", 0))
+            elif block_type == "input_json_delta":
+                # 累积 JSON 片段（args 分批到达）
+                partial_json = block.get("partial_json", "")
+                if partial_json:
+                    tracker.append_json_delta(partial_json, block.get("index", 0))
+
+            elif block_type == "tool_call_chunk":
+                tool_id = block.get("id", "")
+                name = block.get("name", "")
+                if tool_id:
+                    tracker.update(tool_id, name=name)
+                partial_args = block.get("args", "")
+                if isinstance(partial_args, str) and partial_args:
+                    tracker.append_json_delta(partial_args, block.get("index", 0))
 
     def _handle_tool_use_block(self, block: dict, emitter: StreamEventEmitter, tracker: ToolCallTracker):
-        """处理 tool_use 块（只更新 tracker，不发送事件）
+        """处理 tool_use 块 - 立即发送 tool_call 事件
 
-        tool_call 事件延迟到 tool_result 时再发送，确保 args 已完整。
+        在收到 tool_use 时立即发送，让 CLI 可以显示"正在执行"状态。
+        避免重复发送（同一 tool 可能通过多个路径到达）。
         """
-        # 让函数成为空生成器
-        if False:
-            yield
         tool_id = block.get("id", "")
         if tool_id:
-            tracker.update(tool_id, name=block.get("name"), args=block.get("input"))
+            name = block.get("name", "")
+            args = block.get("input", {})
+            tracker.update(tool_id, name=name, args=args)
+            # 只有未发送过的才发送
+            if tracker.is_ready(tool_id):
+                tracker.mark_emitted(tool_id)
+                yield emitter.tool_call(name, args, tool_id)
 
     def _process_tool_calls(self, tool_calls: list, emitter: StreamEventEmitter, tracker: ToolCallTracker):
-        """处理 chunk.tool_calls（只更新 tracker，不发送事件）
+        """处理 chunk.tool_calls - 立即发送 tool_call 事件
 
-        tool_call 事件延迟到 tool_result 时再发送，确保 args 已完整。
+        避免重复发送（同一 tool 可能通过 tool_use block 已发送）。
         """
-        # 让函数成为空生成器
-        if False:
-            yield
         for tc in tool_calls:
             tool_id = tc.get("id", "")
             if tool_id:
-                tracker.update(tool_id, name=tc.get("name"), args=tc.get("args"))
+                name = tc.get("name", "")
+                args = tc.get("args", {})
+                tracker.update(tool_id, name=name, args=args)
+                # 只有未发送过的才发送
+                if tracker.is_ready(tool_id):
+                    tracker.mark_emitted(tool_id)
+                    yield emitter.tool_call(name, args, tool_id)
 
     def _process_tool_result(self, chunk, emitter: StreamEventEmitter, tracker: ToolCallTracker):
         """处理工具结果"""
         # 最终化：解析累积的 JSON 片段为 args
         tracker.finalize_all()
 
-        # 发送所有未发送的 tool_call
-        for info in tracker.emit_all_pending():
+        # 注意：tool_call 通常在 content block 或 tool_calls 中已发送
+        # 这里只处理可能遗漏的情况（如 input_json_delta 更新了 args 但未通过 tool_use 块）
+        for info in tracker.get_pending():
             yield emitter.tool_call(info.name, info.args, info.id)
+            tracker.mark_emitted(info.id)
 
         # 发送结果
         name = getattr(chunk, "name", "unknown")

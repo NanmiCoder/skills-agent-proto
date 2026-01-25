@@ -167,7 +167,6 @@ sequenceDiagram
 | `stream/emitter.py` | 流式事件格式化 |
 | `stream/tracker.py` | 工具调用状态追踪 |
 | `stream/formatter.py` | 工具结果格式化显示 |
-| `streaming_model.py` | 流式模型包装器 |
 
 ## 5. 数据流向图
 
