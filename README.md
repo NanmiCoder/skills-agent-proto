@@ -38,38 +38,44 @@ ANTHROPIC_BASE_URL=https://api.jiekou.ai/anthropic
 uv run langchain-skills --interactive
 ```
 
-## 交互式演示
+## 三层加载演示
 
-### 基础命令测试
+启动后可以观察到完整的三层加载过程：
 
-```
-You: 列出当前目录的文件
-```
-
-观察输出：
-- 🔧 Tool Call: `bash` + 参数 `{"command": "ls -la"}`
-- 📤 Tool Result: `[OK]` + 文件列表
-- 💬 Response: AI 的总结
-
-### Skills 加载测试
+### Level 1: 启动时 - 元数据注入
 
 ```
-You: 提取这篇公众号文章 https://mp.weixin.qq.com/s/xxx
+✓ Discovered 6 skills
+  - tornado-erp-module-dev
+  - web-design-guidelines
+  - news-extractor
+  ...
 ```
 
-观察三层加载：
-1. **Level 1**: Agent 在 system prompt 中看到 `news-extractor` skill 元数据
-2. **Level 2**: Agent 调用 `load_skill("news-extractor")` 获取详细指令
-3. **Level 3**: Agent 根据指令调用 `bash` 执行提取脚本
+Skills 的 name + description 已注入 system prompt，模型知道有哪些能力可用。
 
-### 错误处理测试
+### Level 2: 请求匹配时 - 指令加载
 
 ```
-You: 执行 exit 1
+You: 总结这篇文章 https://mp.weixin.qq.com/s/ohsU1xRrYu9xcVD7qu5lNw
+
+● load_skill(news-extractor)
+  └ # Skill: news-extractor
+    ## Instructions
+    从主流新闻平台提取文章内容...
 ```
 
-观察输出：
-- 📤 Tool Result: `[FAILED] Exit code: 1` (红色标识)
+用户请求匹配到 skill 描述，模型主动调用 `load_skill` 获取完整指令。
+
+### Level 3: 执行时 - 脚本运行
+
+```
+● Bash(uv run .../extract_news.py https://mp.weixin.qq.com/s/ohsU1xRrYu9xcVD7qu5lNw)
+  └ [OK]
+    [SUCCESS] Saved: output/xxx.md
+```
+
+模型根据指令执行脚本，**脚本代码不进入上下文，只有输出进入**。
 
 ## CLI 命令
 
@@ -97,14 +103,14 @@ skills-agent-proto/
 ├── src/langchain_skills/
 │   ├── agent.py          # LangChain Agent (Extended Thinking)
 │   ├── cli.py            # CLI 入口 (流式输出)
-│   ├── tools.py          # 工具定义 (bash, load_skill, read_file, write_file)
+│   ├── tools.py          # 工具定义 (load_skill, bash, read_file, write_file, glob, grep, edit, list_dir)
 │   ├── skill_loader.py   # Skills 发现和加载
 │   └── stream/           # 流式处理模块
 │       ├── emitter.py    # 事件发射器
 │       ├── tracker.py    # 工具调用追踪（支持增量 JSON）
 │       ├── formatter.py  # 结果格式化器
 │       └── utils.py      # 常量和工具函数
-├── tests/                # 单元测试 (70 tests)
+├── tests/                # 单元测试
 │   ├── test_stream.py
 │   ├── test_cli.py
 │   └── test_tools.py
@@ -125,88 +131,10 @@ skills-agent-proto/
 | **Level 2** | 触发时 | <5000 | SKILL.md 完整指令 |
 | **Level 3** | 执行时 | 仅输出 | 脚本执行结果（代码不进上下文） |
 
-## 流式输出架构
-
-```
-Agent.stream_events()
-    ↓
-┌─────────────────────────────────────────────────────┐
-│  stream/emitter.py    → 生成标准化事件              │
-│  stream/tracker.py    → 追踪工具调用（处理增量JSON）│
-│  stream/formatter.py  → 格式化输出（检测成功/失败） │
-└─────────────────────────────────────────────────────┘
-    ↓
-CLI (Rich Live Display)
-    ↓
-┌─────────────────────────────────────────────────────┐
-│  🧠 Thinking Panel (蓝色)                          │
-│  🔧 Tool Call (黄色) + Args                        │
-│  📤 Tool Result (绿色 ✓ / 红色 ✗)                  │
-│  💬 Response Panel (绿色)                          │
-└─────────────────────────────────────────────────────┘
-```
-
-## 工具输出格式
-
-bash 工具使用 `[OK]`/`[FAILED]` 前缀标识执行状态：
-
-```
-# 成功
-[OK]
-
-file1.txt
-file2.txt
-
-# 失败
-[FAILED] Exit code: 1
-
---- stderr ---
-ls: /nonexistent: No such file or directory
-```
-
 ## 运行测试
 
 ```bash
 uv run python -m pytest tests/ -v
-```
-
-## 代码示例
-
-### 作为库使用
-
-```python
-from langchain_skills import LangChainSkillsAgent
-
-# 创建 Agent
-agent = LangChainSkillsAgent(enable_thinking=True)
-
-# 流式输出
-for event in agent.stream_events("列出当前目录"):
-    if event.get("type") == "tool_call":
-        print(f"Tool: {event['name']}, Args: {event['args']}")
-    elif event.get("type") == "tool_result":
-        print(f"Result: {event['content'][:100]}")
-    elif event.get("type") == "text":
-        print(event["content"], end="")
-```
-
-### LangChain 1.0 API
-
-```python
-from langchain.agents import create_agent
-from langchain.chat_models import init_chat_model
-
-model = init_chat_model("claude-sonnet-4-5-20250929", thinking={
-    "type": "enabled",
-    "budget_tokens": 10000,
-})
-
-agent = create_agent(
-    model=model,
-    tools=[load_skill, bash, read_file, write_file],
-    system_prompt=skills_prompt,
-    context_schema=SkillAgentContext,
-)
 ```
 
 ## 环境变量

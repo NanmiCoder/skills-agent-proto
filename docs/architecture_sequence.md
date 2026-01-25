@@ -163,7 +163,7 @@ sequenceDiagram
 | `cli.py` | CLI 入口，Rich 流式显示，用户交互 |
 | `agent.py` | LangChainSkillsAgent 核心，LangChain 集成 |
 | `skill_loader.py` | Skills 扫描和加载，三层机制实现 |
-| `tools.py` | 工具定义：load_skill, bash, read_file, write_file |
+| `tools.py` | 工具定义：load_skill, bash, read_file, write_file, glob, grep, edit, list_dir |
 | `stream/emitter.py` | 流式事件格式化 |
 | `stream/tracker.py` | 工具调用状态追踪 |
 | `stream/formatter.py` | 工具结果格式化显示 |
@@ -197,6 +197,10 @@ flowchart TB
         Bash[bash]
         ReadFile[read_file]
         WriteFile[write_file]
+        Glob[glob]
+        Grep[grep]
+        Edit[edit]
+        ListDir[list_dir]
     end
 
     subgraph 外部资源
@@ -219,11 +223,19 @@ flowchart TB
     Agent --> Bash
     Agent --> ReadFile
     Agent --> WriteFile
+    Agent --> Glob
+    Agent --> Grep
+    Agent --> Edit
+    Agent --> ListDir
 
     LoadSkill --> Loader
     Bash --> FS
     ReadFile --> FS
     WriteFile --> FS
+    Glob --> FS
+    Grep --> FS
+    Edit --> FS
+    ListDir --> FS
 ```
 
 ## 关键设计理念
@@ -233,3 +245,34 @@ flowchart TB
 3. **流式优先**: 所有响应都支持 token 级流式输出
 4. **大模型自主**: 让 LLM 自己阅读指令、发现脚本、决定执行
 5. **项目优先**: 项目级 Skills 覆盖用户级，支持针对性定制
+
+## 6. 工具调用参数处理
+
+LangChain 流式传输中，工具参数可能分批到达：
+
+```mermaid
+sequenceDiagram
+    participant LLM as LLM
+    participant Agent as Agent
+    participant Tracker as ToolCallTracker
+    participant CLI as CLI
+
+    LLM->>Agent: tool_use (input=None)
+    Agent->>Tracker: update(id, name)
+    Agent->>CLI: tool_call(name, {}) 显示"执行中"
+
+    loop input_json_delta 分批到达
+        LLM->>Agent: input_json_delta (partial_json)
+        Agent->>Tracker: append_json_delta(partial)
+    end
+
+    LLM->>Agent: tool_result
+    Agent->>Tracker: finalize_all()
+    Agent->>CLI: tool_call(name, {完整args}) 更新显示
+    Agent->>CLI: tool_result
+```
+
+**关键设计**：
+- `ToolCallTracker` 累积 JSON 片段，使用 `args_complete` 标志标记参数是否完整
+- CLI 使用 `tool_id` 去重和更新显示
+- 先显示"执行中"状态，参数完整后更新为完整参数
