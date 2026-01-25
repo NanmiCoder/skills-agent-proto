@@ -19,6 +19,11 @@ from langchain_skills.stream import (
     DisplayLimits,
     SUCCESS_PREFIX,
     FAILURE_PREFIX,
+    ToolStatus,
+    format_tool_compact,
+    format_tree_output,
+    count_lines,
+    truncate_with_line_hint,
 )
 from pathlib import Path
 
@@ -291,3 +296,137 @@ class TestConstants:
 
     def test_failure_prefix(self):
         assert FAILURE_PREFIX == "[FAILED]"
+
+
+class TestToolStatus:
+    """测试工具状态指示器"""
+
+    def test_status_values(self):
+        assert ToolStatus.RUNNING.value == "●"
+        assert ToolStatus.SUCCESS.value == "●"
+        assert ToolStatus.ERROR.value == "●"
+        assert ToolStatus.PENDING.value == "○"
+
+
+class TestFormatToolCompact:
+    """测试紧凑格式化函数"""
+
+    def test_bash_command(self):
+        result = format_tool_compact("bash", {"command": "git status"})
+        assert result == "Bash(git status)"
+
+    def test_bash_long_command(self):
+        long_cmd = "cat " + "x" * 100
+        result = format_tool_compact("bash", {"command": long_cmd})
+        assert len(result) < 60
+        assert result.endswith("...)")
+
+    def test_read_file(self):
+        result = format_tool_compact("read", {"file_path": "/path/to/file.py"})
+        assert result == "Read(/path/to/file.py)"
+
+    def test_read_long_path(self):
+        long_path = "/very/long/path/to/some/deeply/nested/file.py"
+        result = format_tool_compact("read", {"file_path": long_path})
+        assert "..." in result
+        assert result.endswith("file.py)")
+
+    def test_write_file(self):
+        result = format_tool_compact("write", {"file_path": "/path/to/file.py"})
+        assert result == "Write(/path/to/file.py)"
+
+    def test_edit_file(self):
+        result = format_tool_compact("edit", {"file_path": "/path/to/file.py"})
+        assert result == "Edit(/path/to/file.py)"
+
+    def test_glob_pattern(self):
+        result = format_tool_compact("glob", {"pattern": "**/*.py"})
+        assert result == "Glob(**/*.py)"
+
+    def test_grep_pattern(self):
+        result = format_tool_compact("grep", {"pattern": "def main", "path": "."})
+        assert result == "Grep(def main, .)"
+
+    def test_list_dir(self):
+        result = format_tool_compact("list_dir", {"path": "src"})
+        assert result == "ListDir(src)"
+
+    def test_load_skill(self):
+        result = format_tool_compact("load_skill", {"skill_name": "news-extractor"})
+        assert result == "load_skill(news-extractor)"
+
+    def test_empty_args(self):
+        result = format_tool_compact("some_tool", {})
+        assert result == "some_tool()"
+
+    def test_none_args(self):
+        result = format_tool_compact("some_tool", None)
+        assert result == "some_tool()"
+
+    def test_generic_tool(self):
+        result = format_tool_compact("custom_tool", {"arg1": "value1", "arg2": "value2"})
+        assert "custom_tool(" in result
+        assert "arg1=" in result
+
+
+class TestFormatTreeOutput:
+    """测试树形输出函数"""
+
+    def test_basic_output(self):
+        lines = ["line1", "line2", "line3"]
+        result = format_tree_output(lines, max_lines=5)
+        assert "└ line1" in result
+        assert "line2" in result
+        assert "line3" in result
+
+    def test_truncation(self):
+        lines = ["line1", "line2", "line3", "line4", "line5", "line6"]
+        result = format_tree_output(lines, max_lines=3)
+        assert "└ line1" in result
+        assert "+3 lines" in result
+
+    def test_empty_lines(self):
+        result = format_tree_output([], max_lines=5)
+        assert result == ""
+
+    def test_custom_indent(self):
+        lines = ["line1"]
+        result = format_tree_output(lines, max_lines=5, indent="    ")
+        assert "    └ line1" in result
+
+
+class TestCountLines:
+    """测试行数统计函数"""
+
+    def test_single_line(self):
+        assert count_lines("single line") == 1
+
+    def test_multiple_lines(self):
+        assert count_lines("line1\nline2\nline3") == 3
+
+    def test_empty_string(self):
+        assert count_lines("") == 0
+
+    def test_whitespace_only(self):
+        assert count_lines("   \n   ") == 1  # stripped to single empty-ish line
+
+
+class TestTruncateWithLineHint:
+    """测试带行数提示的截断函数"""
+
+    def test_no_truncation_needed(self):
+        content = "line1\nline2"
+        truncated, remaining = truncate_with_line_hint(content, max_lines=5)
+        assert truncated == "line1\nline2"
+        assert remaining == 0
+
+    def test_truncation_applied(self):
+        content = "line1\nline2\nline3\nline4\nline5\nline6"
+        truncated, remaining = truncate_with_line_hint(content, max_lines=3)
+        assert truncated == "line1\nline2\nline3"
+        assert remaining == 3
+
+    def test_exact_limit(self):
+        content = "line1\nline2\nline3"
+        truncated, remaining = truncate_with_line_hint(content, max_lines=3)
+        assert remaining == 0

@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "rich>=14.2.0",
+    "prompt-toolkit>=3.0.0",
     # LangChain 1.0 Skills Agent 依赖
     "langchain>=1.0.0",
     "langchain-anthropic>=1.0.0",

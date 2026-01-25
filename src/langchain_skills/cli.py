@@ -7,9 +7,13 @@ LangChain Skills Agent CLI
 - 执行用户请求（支持流式输出和 thinking 显示）
 - 交互式对话模式
 
-流式输出特性：
+流式输出特性（Claude Code 风格）：
 - 🧠 Thinking 面板：实时显示模型思考过程（蓝色）
-- 🔧 Tool Calls：显示工具调用（黄色）
+- ● Tool Calls：紧凑格式显示，如 Bash(git status)
+  - 绿色圆点 ● 表示成功
+  - 黄色圆点 ● 表示执行中
+  - 红色圆点 ● 表示失败
+- 树形输出：└ 连接子内容，折叠长输出显示 ... +X lines
 - 💬 Response 面板：逐字显示最终响应（绿色）
 """
 
@@ -20,6 +24,10 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
+from prompt_toolkit import PromptSession
+from prompt_toolkit.history import FileHistory
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.formatted_text import HTML
 from rich.console import Console, Group
 from rich.panel import Panel
 from rich.markdown import Markdown
@@ -33,13 +41,27 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from .agent import LangChainSkillsAgent, check_api_credentials
 from .skill_loader import SkillLoader
-from .stream import ToolResultFormatter, has_args, DisplayLimits
+from .stream import (
+    ToolResultFormatter,
+    has_args,
+    DisplayLimits,
+    ToolStatus,
+    format_tool_compact,
+    format_tree_output,
+    count_lines,
+    truncate_with_line_hint,
+    is_success,
+)
 
 
 # 加载环境变量（override=True 确保 .env 文件覆盖系统环境变量）
 load_dotenv(override=True)
 
-console = Console()
+# Rich Console 配置：支持 Windows 和 NO_COLOR 环境变量
+console = Console(
+    legacy_windows=(sys.platform == 'win32'),
+    no_color=os.getenv('NO_COLOR') is not None,
+)
 
 # 全局工具结果格式化器
 formatter = ToolResultFormatter()
@@ -104,6 +126,14 @@ class StreamState:
             if not self.response_text:
                 self.response_text = event.get("response", "")
 
+        elif event_type == "error":
+            self.is_processing = False
+            self.is_thinking = False
+            self.is_responding = False
+            # 将错误添加到响应中显示
+            error_msg = event.get("message", "Unknown error")
+            self.response_text += f"\n\n[Error] {error_msg}"
+
         return event_type
 
     def get_display_args(self) -> dict:
@@ -125,6 +155,7 @@ def display_final_results(
     tool_result_max_length: int = DisplayLimits.TOOL_RESULT_FINAL,
     args_max_length: int = DisplayLimits.ARGS_FORMATTED,
     show_thinking: bool = True,
+    show_tools: bool = True,
     show_response_panel: bool = True,
 ):
     """
@@ -150,20 +181,39 @@ def display_final_results(
             border_style="blue",
         ))
 
-    # 显示工具调用和结果
-    if state.tool_calls:
+    # 显示工具调用和结果（Claude Code 风格）
+    if show_tools and state.tool_calls:
         for i, tc in enumerate(state.tool_calls):
-            console.print(f"[yellow]🔧 Tool: {tc['name']}[/yellow]")
-            if has_args(tc.get("args")):
-                for elem in format_tool_args(tc["args"], max_length=args_max_length):
-                    console.print(elem)
-            # 显示对应的工具结果
-            if i < len(state.tool_results):
-                tr = state.tool_results[i]
+            # 判断是否有结果及成功状态
+            has_result = i < len(state.tool_results)
+            tr = state.tool_results[i] if has_result else None
+            content = tr.get('content', '') if tr else ''
+
+            # 确定状态和颜色
+            if has_result and is_success(content):
+                status = ToolStatus.SUCCESS
+                style = "bold green"
+            elif has_result:
+                status = ToolStatus.ERROR
+                style = "bold red"
+            else:
+                status = ToolStatus.PENDING
+                style = "dim"
+
+            # 紧凑格式显示
+            tool_compact = format_tool_compact(tc['name'], tc.get('args'))
+            tool_text = Text()
+            tool_text.append(f"{status.value} ", style=style)
+            tool_text.append(tool_compact, style=style)
+            console.print(tool_text)
+
+            # 显示工具结果（树形格式）
+            if has_result:
                 result_elements = format_tool_result(
                     tr['name'],
-                    tr.get('content', ''),
+                    content,
                     max_length=tool_result_max_length,
+                    compact=True,
                 )
                 for elem in result_elements:
                     console.print(elem)
@@ -183,22 +233,65 @@ def display_final_results(
             console.print()
 
 
-def format_tool_result(name: str, content: str, max_length: int = 800) -> list:
+def format_tool_result(name: str, content: str, max_length: int = 800, compact: bool = False) -> list:
     """
     智能格式化工具结果
-
-    使用 ToolResultFormatter 进行统一格式化。
 
     Args:
         name: 工具名称
         content: 工具输出内容
         max_length: 最大显示长度
+        compact: 是否使用紧凑的树形格式（Claude Code 风格）
 
     Returns:
         Rich 可渲染元素列表
     """
-    result = formatter.format(name, content, max_length)
-    return result.elements
+    if compact:
+        # Claude Code 风格：树形输出
+        return format_tool_result_compact(name, content, max_lines=5)
+    else:
+        # 原有格式
+        result = formatter.format(name, content, max_length)
+        return result.elements
+
+
+def format_tool_result_compact(name: str, content: str, max_lines: int = 5) -> list:
+    """
+    使用 Claude Code 风格格式化工具结果（树形输出）
+
+    Args:
+        name: 工具名称
+        content: 工具输出内容
+        max_lines: 最大显示行数
+
+    Returns:
+        Rich 可渲染元素列表
+    """
+    elements = []
+
+    if not content.strip():
+        elements.append(Text("  └ (empty)", style="dim"))
+        return elements
+
+    lines = content.strip().split("\n")
+    total_lines = len(lines)
+
+    # 显示前几行
+    display_lines = lines[:max_lines]
+    for i, line in enumerate(display_lines):
+        prefix = "└" if i == 0 else " "
+        # 截断过长的行
+        if len(line) > 80:
+            line = line[:77] + "..."
+        style = "dim" if is_success(content) else "red dim"
+        elements.append(Text(f"  {prefix} {line}", style=style))
+
+    # 折叠提示
+    remaining = total_lines - max_lines
+    if remaining > 0:
+        elements.append(Text(f"    ... +{remaining} lines", style="dim italic"))
+
+    return elements
 
 
 def format_tool_args(args: dict, max_length: int = 300) -> list:
@@ -281,32 +374,47 @@ def create_streaming_display(
             padding=(0, 1),
         ))
 
-    # Tool Calls 和 Results 配对显示
+    # Tool Calls 和 Results 配对显示（Claude Code 风格）
     if tool_calls:
         for i, tc in enumerate(tool_calls):
-            # 显示工具调用
-            tool_text = f"🔧 {tc['name']}"
-            if has_args(tc.get("args")):
-                # 简化显示参数
-                args_str = str(tc["args"])
-                if len(args_str) > DisplayLimits.ARGS_INLINE:
-                    args_str = args_str[:DisplayLimits.ARGS_INLINE] + "..."
-                tool_text += f"\n   {args_str}"
-            elements.append(Text(tool_text, style="yellow"))
+            # 判断工具状态
+            has_result = i < len(tool_results)
+            tr = tool_results[i] if has_result else None
+
+            # 确定状态和颜色
+            if has_result:
+                # 已完成：根据结果判断成功/失败
+                content = tr.get('content', '') if tr else ''
+                if is_success(content):
+                    status = ToolStatus.SUCCESS
+                    style = "bold green"
+                else:
+                    status = ToolStatus.ERROR
+                    style = "bold red"
+            else:
+                # 执行中
+                status = ToolStatus.RUNNING
+                style = "bold yellow"
+
+            # 紧凑格式显示工具调用
+            tool_compact = format_tool_compact(tc['name'], tc.get('args'))
+            tool_text = Text()
+            tool_text.append(f"{status.value} ", style=style)
+            tool_text.append(tool_compact, style=style)
+            elements.append(tool_text)
 
             # 显示对应的结果或"正在执行"状态
-            if i < len(tool_results):
-                # 已有结果，显示结果
-                tr = tool_results[i]
+            if has_result:
+                # 已有结果，显示树形输出
                 result_elements = format_tool_result(
                     tr['name'],
                     tr.get('content', ''),
-                    max_length=DisplayLimits.TOOL_RESULT_STREAM,
+                    compact=True,  # 使用紧凑格式
                 )
                 elements.extend(result_elements)
             else:
                 # 还没有结果，显示带 spinner 的"正在执行"状态
-                spinner = Spinner("dots", text=f" {tc['name']} 正在执行中...", style="yellow")
+                spinner = Spinner("dots", text=" 执行中...", style="yellow")
                 elements.append(spinner)
 
     # 工具执行后等待 AI 继续处理的状态
@@ -485,9 +593,20 @@ def cmd_interactive(enable_thinking: bool = True):
 
     thread_id = "interactive"
 
+    # 初始化 prompt_toolkit session（跨平台兼容路径）
+    history_file = str(Path.home() / ".langchain_skills_history")
+    session = PromptSession(
+        history=FileHistory(history_file),
+        auto_suggest=AutoSuggestFromHistory(),
+        enable_history_search=True,
+    )
+
     while True:
         try:
-            user_input = console.input("[bold green]You:[/bold green] ").strip()
+            # 使用 prompt_toolkit 替代 console.input，支持中文删除和历史记录
+            user_input = session.prompt(
+                HTML('<ansigreen><b>You:</b></ansigreen> ')
+            ).strip()
 
             if not user_input:
                 continue
@@ -532,6 +651,8 @@ def cmd_interactive(enable_thinking: bool = True):
                 thinking_max_length=500,  # 交互模式用较短的 thinking 显示
                 tool_result_max_length=DisplayLimits.TOOL_RESULT_FINAL,
                 args_max_length=DisplayLimits.ARGS_FORMATTED,
+                show_thinking=False,
+                show_tools=False,
                 show_response_panel=False,  # 交互模式不用 Panel
             )
 
