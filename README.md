@@ -40,6 +40,8 @@ uv run langchain-skills --interactive
 
 ## 三层加载演示
 
+![Skills Agent 交互流程](docs/images/basic.png)
+
 启动后可以观察到完整的三层加载过程：
 
 ### Level 1: 启动时 - 元数据注入
