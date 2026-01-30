@@ -285,6 +285,15 @@ def format_tool_result_compact(name: str, content: str, max_lines: int = 5) -> l
     """
     elements = []
 
+    # load_skill 工具：只显示简短的成功消息
+    if name.lower() == "load_skill":
+        if is_success(content):
+            elements.append(Text("  └ Successfully loaded skill", style="dim"))
+        else:
+            # 失败时显示错误内容
+            elements.append(Text(f"  └ {content.strip()[:60]}", style="red dim"))
+        return elements
+
     if not content.strip():
         elements.append(Text("  └ (empty)", style="dim"))
         return elements

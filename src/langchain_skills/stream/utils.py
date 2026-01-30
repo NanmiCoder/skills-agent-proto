@@ -219,7 +219,7 @@ def format_tool_compact(name: str, args: dict | None) -> str:
 
     elif name_lower == "load_skill":
         skill_name = args.get("skill_name", "")
-        return f"load_skill({skill_name})"
+        return f"Skill({skill_name})"
 
     # 默认格式：显示前几个参数
     params = []

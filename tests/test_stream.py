@@ -399,7 +399,7 @@ class TestFormatToolCompact:
 
     def test_load_skill(self):
         result = format_tool_compact("load_skill", {"skill_name": "news-extractor"})
-        assert result == "load_skill(news-extractor)"
+        assert result == "Skill(news-extractor)"
 
     def test_empty_args(self):
         result = format_tool_compact("some_tool", {})
