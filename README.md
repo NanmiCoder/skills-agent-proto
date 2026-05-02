@@ -75,6 +75,8 @@ OPENAI_REASONING_EFFORT=medium
 OPENAI_USE_RESPONSES_API=false
 ```
 
+这种模式下 `MODEL_BASE_URL` / `OPENAI_BASE_URL` 可以填到兼容服务的 base 层级，例如 `https://api.jiekou.ai/openai` 或 `https://api.jiekou.ai/openai/v1`。如果误填到完整 endpoint，例如 `.../v1/chat/completions`，项目会自动裁剪回 SDK 需要的 `.../v1`，避免重复拼接路径。
+
 ### 3. 交互式验证
 
 ```bash

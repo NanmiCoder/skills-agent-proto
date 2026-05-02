@@ -79,12 +79,17 @@ def _parse_bool_env(name: str, default: bool) -> bool:
     return raw_value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _normalize_openai_base_url(base_url: str | None, use_responses_api: bool) -> str | None:
-    """为 OpenAI Responses API 规范化 base_url"""
-    if not base_url or not use_responses_api:
+def _normalize_openai_base_url(base_url: str | None) -> str | None:
+    """规范化 OpenAI SDK base_url，避免传入完整 endpoint 后被重复拼接。"""
+    if not base_url:
         return base_url
 
     normalized = base_url.rstrip("/")
+    for endpoint_suffix in ("/chat/completions", "/responses"):
+        if normalized.endswith(endpoint_suffix):
+            normalized = normalized[: -len(endpoint_suffix)]
+            break
+
     if normalized.endswith("/v1"):
         return normalized
     return f"{normalized}/v1"
@@ -381,9 +386,10 @@ When a user request matches a skill's description, use the load_skill tool to ge
                     "effort": reasoning_effort,
                     "summary": os.getenv("OPENAI_REASONING_SUMMARY", "auto"),
                 }
-                base_url = _normalize_openai_base_url(base_url, use_responses_api=True)
+                base_url = _normalize_openai_base_url(base_url)
             else:
                 init_kwargs["reasoning_effort"] = reasoning_effort
+                base_url = _normalize_openai_base_url(base_url)
 
         if base_url:
             init_kwargs["base_url"] = base_url
